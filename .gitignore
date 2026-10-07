@@ -1,0 +1,12 @@
+# Rahasia & Kredensial
+.env
+credentials.json
+token.pickle
+
+# Database / Excel lokal (opsional, agar data lamaran pribadi tidak terupload)
+*.xlsx
+~$*.xlsx
+
+# Cache Python
+__pycache__/
+*.pyc
