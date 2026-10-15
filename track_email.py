@@ -27,15 +27,24 @@ EXCEL_FILE = "Hasil_Klasifikasi_Lamaran.xlsx"
 def authenticate_gmail():
     creds = None
     if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
+        try:
+            with open('token.pickle', 'rb') as token:
+                creds = pickle.load(token)
+        except Exception:
+            creds = None
             
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"Token lama kedaluwarsa. Membuka browser untuk login ulang...")
+                creds = None
+
+        if not creds or not creds.valid:
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0, open_browser=False)
+            creds = flow.run_local_server(port=0)
+            
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
 
@@ -175,12 +184,18 @@ def load_existing_data():
                 posisi = str(row.get('Posisi', ''))
                 if perusahaan and posisi:
                     key = f"{perusahaan.upper()} - {posisi.upper()}"
+                    ringkasan_val = row.get('Ringkasan', '')
+                    if pd.isna(ringkasan_val) or ringkasan_val == 'nan':
+                        ringkasan_val = row.get('Ringkasan AI', '')
+                    if pd.isna(ringkasan_val) or ringkasan_val == 'nan':
+                        ringkasan_val = ''
+                        
                     lamaran_dict[key] = {
                         "Tanggal Update": row.get('Tanggal Update', ''),
                         "Perusahaan": perusahaan,
                         "Posisi": posisi,
                         "Status": row.get('Status', ''),
-                        "Ringkasan AI": row.get('Ringkasan AI', ''),
+                        "Ringkasan": ringkasan_val,
                         "Tindakan Lanjutan": row.get('Tindakan Lanjutan', '')
                     }
         except Exception as e:
@@ -191,7 +206,8 @@ def main():
     print("Mendapatkan layanan Gmail API...")
     try:
         service = authenticate_gmail()
-    except Exception:
+    except Exception as e:
+        print(f"Error saat autentikasi Gmail: {e}")
         return
 
     print("Mengambil 30 email terbaru untuk pengecekan harian...")
