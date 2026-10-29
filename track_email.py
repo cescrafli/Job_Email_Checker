@@ -135,11 +135,22 @@ def classify_email_with_ai(email_data):
     Tugas Anda adalah mengekstrak data dari email tersebut.
     Tentukan apakah email ini terkait dengan proses lamaran kerja.
     Jika ya, tebak nama perusahaan dan posisi (role) yang dilamar.
-    Tentukan juga status terbarunya:
+    Tentukan status terbarunya:
     - DITERIMA (offering letter, diterima kerja)
     - ON PROGRESS (panggilan tes, interview, lamaran diterima/sedang diproses)
     - DITOLAK (tidak lolos, posisi sudah terisi)
     - LAINNYA (newsletter, job alert, promosi, dll)
+
+    Tentukan juga tahapan seleksi spesifiknya:
+    - PSIKOTES (tes psikologi, asesmen kepribadian, tes potensi akademik, tes kognitif)
+    - TECHNICAL TEST (tes koding, studi kasus, take-home assignment, tes teknis)
+    - INTERVIEW HR (interview awal, screening, perkenalan HR)
+    - INTERVIEW USER (interview teknis/user, panel, direksi)
+    - SELEKSI ADMINISTRASI (konfirmasi lamaran terkirim, berkas diproses/ditinjau)
+    - MEDICAL CHECK UP (MCU, tes kesehatan)
+    - OFFERING (penawaran gaji/kontrak kerja)
+    - TIDAK LOLOS (jika status DITOLAK)
+    - LAINNYA (jika tidak ada kategori yang cocok)
     
     PENTING: Balas HANYA dengan format JSON valid tanpa awalan atau akhiran apapun (tanpa markdown ```json).
     Contoh output yang diharapkan:
@@ -148,7 +159,8 @@ def classify_email_with_ai(email_data):
         "perusahaan": "Tokopedia",
         "posisi": "Data Analyst",
         "status": "ON PROGRESS",
-        "ringkasan": "Diundang untuk interview tahap 1"
+        "tahapan": "INTERVIEW HR",
+        "ringkasan": "Diundang untuk interview tahap 1 via Google Meet"
     }}
     """
     for attempt in range(3):
@@ -189,12 +201,17 @@ def load_existing_data():
                         ringkasan_val = row.get('Ringkasan AI', '')
                     if pd.isna(ringkasan_val) or ringkasan_val == 'nan':
                         ringkasan_val = ''
+                    
+                    tahapan_val = row.get('Tahapan Seleksi', '')
+                    if pd.isna(tahapan_val) or str(tahapan_val).strip() in ['nan', 'None', '']:
+                        tahapan_val = '-'
                         
                     lamaran_dict[key] = {
                         "Tanggal Update": row.get('Tanggal Update', ''),
                         "Perusahaan": perusahaan,
                         "Posisi": posisi,
                         "Status": row.get('Status', ''),
+                        "Tahapan Seleksi": tahapan_val,
                         "Ringkasan": ringkasan_val,
                         "Tindakan Lanjutan": row.get('Tindakan Lanjutan', '')
                     }
@@ -232,6 +249,19 @@ def main():
         perusahaan = data.get("perusahaan") or "Tidak Diketahui"
         posisi = data.get("posisi") or "Tidak Diketahui"
         status = data.get("status") or "ON PROGRESS"
+        
+        # Penentuan tahapan seleksi
+        tahapan_raw = data.get("tahapan")
+        if not tahapan_raw or tahapan_raw == "LAINNYA":
+            if status == "DITOLAK":
+                tahapan = "TIDAK LOLOS"
+            elif status == "DITERIMA":
+                tahapan = "OFFERING"
+            else:
+                tahapan = "SELEKSI ADMINISTRASI"
+        else:
+            tahapan = tahapan_raw
+
         ringkasan = data.get("ringkasan") or email['snippet']
         
         try:
@@ -244,14 +274,15 @@ def main():
         # Logika menimpa data lama
         if key in lamaran_dict:
             status_lama = lamaran_dict[key]["Status"]
-            if status_lama != status:
-                print(f"[*] UPDATE STATUS: {perusahaan} ({posisi}) | {status_lama} -> {status}")
+            tahapan_lama = lamaran_dict[key].get("Tahapan Seleksi", "-")
+            if status_lama != status or tahapan_lama != tahapan:
+                print(f"[*] UPDATE: {perusahaan} ({posisi}) | {tahapan_lama} ({status_lama}) -> {tahapan} ({status})")
             else:
-                print(f"[+] Info terbaru: {perusahaan} ({posisi}) | Tetap {status}")
+                print(f"[+] Info terbaru: {perusahaan} ({posisi}) | Tetap {tahapan} ({status})")
         else:
-            print(f"[+] LAMARAN BARU: {perusahaan} ({posisi}) | {status}")
+            print(f"[+] LAMARAN BARU: {perusahaan} ({posisi}) | {tahapan} ({status})")
             
-        tindakan = "Follow-up" if status == "ON PROGRESS" else ("Review kontrak" if status == "DITERIMA" else "Arsipkan")
+        tindakan = "Persiapan Tes / Interview" if tahapan in ["PSIKOTES", "TECHNICAL TEST", "INTERVIEW HR", "INTERVIEW USER"] else ("Follow-up" if status == "ON PROGRESS" else ("Review kontrak" if status == "DITERIMA" else "Arsipkan"))
 
         # Update atau Buat entri baru
         lamaran_dict[key] = {
@@ -259,6 +290,7 @@ def main():
             "Perusahaan": perusahaan,
             "Posisi": posisi,
             "Status": status,
+            "Tahapan Seleksi": tahapan,
             "Ringkasan": ringkasan,
             "Tindakan Lanjutan": tindakan
         }
@@ -266,6 +298,9 @@ def main():
     # Menyimpan kembali ke Excel (Replace sheet sepenuhnya)
     if lamaran_dict:
         df = pd.DataFrame(list(lamaran_dict.values()))
+        desired_order = ['Tanggal Update', 'Perusahaan', 'Posisi', 'Status', 'Tahapan Seleksi', 'Ringkasan', 'Tindakan Lanjutan']
+        actual_cols = [c for c in desired_order if c in df.columns] + [c for c in df.columns if c not in desired_order]
+        df = df[actual_cols]
         print(f"Menyimpan {len(df)} total riwayat lamaran ke Excel...")
         
         try:
