@@ -3,6 +3,8 @@ import pickle
 import json
 import time
 import pandas as pd
+import openpyxl
+from openpyxl.styles import Font
 from datetime import datetime
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -50,7 +52,21 @@ def authenticate_gmail():
 
     return build('gmail', 'v1', credentials=creds)
 
-def get_recent_emails(service, max_results=200):
+def get_user_email(service):
+    try:
+        profile = service.users().getProfile(userId='me').execute()
+        return profile.get('emailAddress', '')
+    except Exception:
+        return ''
+
+def build_gmail_link(thread_id, user_email=''):
+    if not thread_id:
+        return ''
+    if user_email:
+        return f"https://mail.google.com/mail/?authuser={user_email}#all/{thread_id}"
+    return f"https://mail.google.com/mail/u/0/#all/{thread_id}"
+
+def get_recent_emails(service, max_results=200, user_email=''):
     request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=max_results)
     results = request.execute()
     messages = results.get('messages', [])
@@ -112,8 +128,13 @@ def get_recent_emails(service, max_results=200):
         if not body:
             body = snippet
         
+        thread_id = msg.get('threadId', message['id'])
+        email_link = build_gmail_link(thread_id, user_email)
+
         emails.append({
             'id': message['id'],
+            'thread_id': thread_id,
+            'link': email_link,
             'date': date_str,
             'sender': sender,
             'subject': subject,
@@ -190,8 +211,28 @@ def load_existing_data():
     if os.path.exists(EXCEL_FILE):
         try:
             df = pd.read_excel(EXCEL_FILE, sheet_name='Tracking')
+
+            # Membaca URL target dari hyperlink openpyxl agar tidak hilang
+            link_targets = {}
+            try:
+                wb = openpyxl.load_workbook(EXCEL_FILE, data_only=False)
+                if 'Tracking' in wb.sheetnames:
+                    ws = wb['Tracking']
+                    headers = [cell.value for cell in ws[1]]
+                    if 'Link' in headers:
+                        link_col_idx = headers.index('Link') + 1
+                        for row_idx in range(2, ws.max_row + 1):
+                            cell = ws.cell(row=row_idx, column=link_col_idx)
+                            if cell.hyperlink and cell.hyperlink.target:
+                                link_targets[row_idx - 2] = cell.hyperlink.target
+                            elif cell.value and str(cell.value).strip().startswith('http'):
+                                link_targets[row_idx - 2] = str(cell.value).strip()
+                wb.close()
+            except Exception:
+                pass
+
             # Memasukkan data lama ke dalam dictionary
-            for _, row in df.iterrows():
+            for idx, row in df.iterrows():
                 perusahaan = str(row.get('Perusahaan', ''))
                 posisi = str(row.get('Posisi', ''))
                 if perusahaan and posisi:
@@ -205,6 +246,10 @@ def load_existing_data():
                     tahapan_val = row.get('Tahapan Seleksi', '')
                     if pd.isna(tahapan_val) or str(tahapan_val).strip() in ['nan', 'None', '']:
                         tahapan_val = '-'
+
+                    link_val = link_targets.get(idx, row.get('Link', ''))
+                    if pd.isna(link_val) or str(link_val).strip() in ['nan', 'None', 'Buka Email']:
+                        link_val = ''
                         
                     lamaran_dict[key] = {
                         "Tanggal Update": row.get('Tanggal Update', ''),
@@ -213,11 +258,27 @@ def load_existing_data():
                         "Status": row.get('Status', ''),
                         "Tahapan Seleksi": tahapan_val,
                         "Ringkasan": ringkasan_val,
-                        "Tindakan Lanjutan": row.get('Tindakan Lanjutan', '')
+                        "Tindakan Lanjutan": row.get('Tindakan Lanjutan', ''),
+                        "Link": str(link_val).strip()
                     }
         except Exception as e:
             print(f"Gagal memuat Excel lama: {e}")
     return lamaran_dict
+
+def save_to_excel(df, filepath):
+    with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Tracking', index=False)
+        ws = writer.sheets['Tracking']
+        headers = [cell.value for cell in ws[1]]
+        if 'Link' in headers:
+            link_col_idx = headers.index('Link') + 1
+            hyperlink_font = Font(color="0563C1", underline="single")
+            for row_idx in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=link_col_idx)
+                url = str(cell.value).strip() if cell.value else ''
+                if url.startswith('http'):
+                    cell.hyperlink = url
+                    cell.font = hyperlink_font
 
 def main():
     print("Mendapatkan layanan Gmail API...")
@@ -227,8 +288,10 @@ def main():
         print(f"Error saat autentikasi Gmail: {e}")
         return
 
+    user_email = get_user_email(service)
+
     print("Mengambil 30 email terbaru untuk pengecekan harian...")
-    emails = get_recent_emails(service, max_results=30) 
+    emails = get_recent_emails(service, max_results=30, user_email=user_email) 
     
     # Membalik urutan email agar diproses dari yang TERLAMA ke TERBARU
     # Ini memastikan email terbaru yang menimpa status lamaran
@@ -292,23 +355,23 @@ def main():
             "Status": status,
             "Tahapan Seleksi": tahapan,
             "Ringkasan": ringkasan,
-            "Tindakan Lanjutan": tindakan
+            "Tindakan Lanjutan": tindakan,
+            "Link": email.get('link', '')
         }
 
     # Menyimpan kembali ke Excel (Replace sheet sepenuhnya)
     if lamaran_dict:
         df = pd.DataFrame(list(lamaran_dict.values()))
-        desired_order = ['Tanggal Update', 'Perusahaan', 'Posisi', 'Status', 'Tahapan Seleksi', 'Ringkasan', 'Tindakan Lanjutan']
+        desired_order = ['Tanggal Update', 'Perusahaan', 'Posisi', 'Status', 'Tahapan Seleksi', 'Ringkasan', 'Tindakan Lanjutan', 'Link']
         actual_cols = [c for c in desired_order if c in df.columns] + [c for c in df.columns if c not in desired_order]
         df = df[actual_cols]
         print(f"Menyimpan {len(df)} total riwayat lamaran ke Excel...")
         
         try:
-            with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Tracking', index=False)
+            save_to_excel(df, EXCEL_FILE)
             print("Berhasil!")
         except Exception as e:
-            df.to_excel("Backup_Lamaran_Baru.xlsx", index=False)
+            save_to_excel(df, "Backup_Lamaran_Baru.xlsx")
             print(f"File utama terkunci, disimpan ke Backup_Lamaran_Baru.xlsx")
     else:
         print("Belum ada data lamaran kerja untuk disimpan.")
